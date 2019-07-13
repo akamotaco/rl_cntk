@@ -1,20 +1,10 @@
-#%%
-from __future__ import print_function
-from __future__ import division
-import matplotlib.pyplot as plt
-from matplotlib import style
-import numpy as np
-import pandas as pd
-import seaborn as sns
+# https://www.cntk.ai/pythondocs/CNTK_203_Reinforcement_Learning_Basics.html
 
-import numpy
-import math
-import os
-import random
+import numpy as np
+import math, random
+import gym
 
 import cntk as C
-
-import gym
 
 
 class Brain:
@@ -70,7 +60,7 @@ class Agent:
         self.epsilon = MAX_EPSILON
 
     def exploitation(self, s):
-        return numpy.argmax(self.brain.predict(s))
+        return np.argmax(self.brain.predict(s))
     def exploration(self, s):
         return random.randint(0, ACTION_COUNT-1)
 
@@ -91,16 +81,16 @@ class Agent:
         batch = self.memory.sample(BATCH_SIZE)
         batchLen = len(batch)
 
-        no_state = numpy.zeros(STATE_COUNT)
+        no_state = np.zeros(STATE_COUNT)
 
-        states = numpy.array([ ob[0] for ob in batch ], dtype=np.float32)
-        states_ = numpy.array([(no_state if ob[3] is None else ob[3]) for ob in batch ], dtype=np.float32)
+        states = np.array([ ob[0] for ob in batch ], dtype=np.float32)
+        states_ = np.array([(no_state if ob[3] is None else ob[3]) for ob in batch ], dtype=np.float32)
 
         q = agent.brain.predict(states)
         q_ = agent.brain.predict(states_)
 
-        x = numpy.zeros((batchLen, STATE_COUNT)).astype(np.float32)
-        y = numpy.zeros((batchLen, ACTION_COUNT)).astype(np.float32)
+        x = np.zeros((batchLen, STATE_COUNT)).astype(np.float32)
+        y = np.zeros((batchLen, ACTION_COUNT)).astype(np.float32)
 
         for i in range(batchLen):
             s, a, r, s_ = batch[i]
@@ -109,7 +99,7 @@ class Agent:
             if s_ is None: # end of game
                 e[a] = r
             else:
-                e[a] = r + GAMMA * numpy.amax(q_[i])
+                e[a] = r + GAMMA * np.amax(q_[i])
 
             x[i] = s
             y[i] = e
@@ -151,19 +141,16 @@ def test(env, agent, render=False):
     num_episodes = 10
 
     for i_episode in range(num_episodes):
-        print(i_episode)
         ob = env.reset()
         done = False
+        reward_sum = 0
         while not done:
             if render is True:
                 env.render()
-            action = numpy.argmax(agent.brain.predict(ob.astype(np.float32)))
+            action = np.argmax(agent.brain.predict(ob.astype(np.float32)))
             ob, reward, done, info = env.step(action)
-
-class Config:
-     def __init__(self, dictionary):
-         for k, v in dictionary.items():
-             setattr(self, k, v)
+            reward_sum += reward
+        print(f'epi:{i_episode}\t reward_sum:{reward_sum}')
 
 if __name__ == '__main__':
     from gym import wrappers, logger
@@ -171,7 +158,9 @@ if __name__ == '__main__':
     C.try_set_default_device(C.gpu(0))
 
     env = gym.make('CartPole-v0')
-    isFast = False # True 
+    isFast = True # False # 
+    isSave = False # True #
+    isRender = False # True # 
 
     #region config
     STATE_COUNT  = env.observation_space.shape[0]
@@ -197,8 +186,9 @@ if __name__ == '__main__':
     agent = Agent()
 
     training(env,agent)
-    test(env,agent, render=True)
-    agent.brain.model.save('dqn_cntk.model')
+    test(env,agent, render=isRender)
+    if isSave:
+        agent.brain.model.save('dqn_cntk.model')
     env.close()
     exit()
 
