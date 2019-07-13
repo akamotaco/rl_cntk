@@ -166,7 +166,6 @@ class Config:
              setattr(self, k, v)
 
 if __name__ == '__main__':
-    from IPython import embed
     from gym import wrappers, logger
 
     C.try_set_default_device(C.gpu(0))
@@ -199,8 +198,7 @@ if __name__ == '__main__':
 
     training(env,agent)
     test(env,agent, render=True)
-    embed()
-    # agent.brain.model.save('dqn_cntk.model')
+    agent.brain.model.save('dqn_cntk.model')
     env.close()
     exit()
 
