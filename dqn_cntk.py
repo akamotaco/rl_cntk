@@ -155,12 +155,14 @@ def test(env, agent, render=False):
 if __name__ == '__main__':
     from gym import wrappers, logger
 
-    C.try_set_default_device(C.gpu(0))
+    # C.try_set_default_device(C.gpu(0))
 
     env = gym.make('CartPole-v0')
     isFast = True # False # 
+    isTraining = True # False # 
     isSave = False # True #
     isRender = False # True # 
+    isPreset = None # 'dqn_cntk.model' # 
 
     #region config
     STATE_COUNT  = env.observation_space.shape[0]
@@ -185,7 +187,10 @@ if __name__ == '__main__':
 
     agent = Agent()
 
-    training(env,agent)
+    if isPreset is not None:
+        agent.brain.model.restore(isPreset)
+    if isTraining:
+        training(env,agent)
     test(env,agent, render=isRender)
     if isSave:
         agent.brain.model.save('dqn_cntk.model')
