@@ -14,6 +14,7 @@ import gym
 from tensorboardX import SummaryWriter
 
 import random
+from time import gmtime, strftime
 import cntk as C
 
 
@@ -87,11 +88,11 @@ class Agent:
         self.val = False
         self.reward = []
         self.reward_over_time = []
-        self.name = self.get_name()
+        self.name = self.get_name(strftime("%Y%m%d%H%M%S", gmtime()))
         self.writer = SummaryWriter(self.name)
         self.gradient_steps = 0
 
-    def get_name(self):
+    def get_name(self, ext=''):
         # name = 'AllRuns/'
         name = 'log/'
         if CONTINUOUS is True:
@@ -99,7 +100,7 @@ class Agent:
         else:
             name += 'discrete/'
         name += ENV
-        return name
+        return name + ext
 
     def build_actor(self):
         # state_input = Input(shape=(NUM_STATE,))
@@ -306,12 +307,18 @@ class Agent:
             ratio = prob/(old_prob + 1e-10)
             surr1 = c_advantage * ratio
             surr2 = c_advantage * C.clip(ratio, 1-LOSS_CLIPPING,  1+LOSS_CLIPPING)
-            loss = -C.reduce_mean(C.element_min(surr1, surr2) + ENTROPY_LOSS * -(prob * C.log(prob + 1e-10)))
+            # loss = -C.reduce_mean(C.element_min(surr1, surr2) + ENTROPY_LOSS * -(prob * C.log(prob + 1e-10))) # from keras
+            neglog_loss = -C.element_min(surr1, surr2)
+            entropy_loss = - ENTROPY_LOSS * -(prob * C.log(prob + 1e-10))
+            # loss = -C.element_min(surr1, surr2) - ENTROPY_LOSS * -(prob * C.log(prob + 1e-10)) # from keras
+            # loss = -C.element_min(surr1, surr2) + ENTROPY_LOSS * -(prob * C.log(prob + 1e-10)) # from pytorch ???
+            loss = C.reduce_mean(neglog_loss + entropy_loss)
             actor_loss = loss
 
             trainer = C.Trainer(actor_loss, (actor_loss,None),  C.adam(actor_loss.parameters, C.learning_parameter_schedule_per_sample(LR), C.learning_parameter_schedule_per_sample(0.99)))
 
             avg = 0
+            avg_out = {neglog_loss.output: 0, entropy_loss.output:0}
             for epoch in range(EPOCHS):
                 data_size = action.shape[0]
                 suffle_idx = random.sample(list(range(data_size)),data_size)
@@ -321,11 +328,16 @@ class Agent:
                 mb_old_prediction = old_prediction[suffle_idx]
                 mb_advantage = advantage[suffle_idx]
 
-                trainer.train_minibatch(dict(zip(actor_loss.arguments,[mb_action, mb_obs, mb_old_prediction, mb_advantage])))
+                updated, out = trainer.train_minibatch(dict(zip(actor_loss.arguments,[mb_advantage, mb_action, mb_obs, mb_old_prediction])),
+                                        outputs=[neglog_loss.output, entropy_loss.output])
                 # print(trainer.previous_minibatch_loss_average)
                 avg += trainer.previous_minibatch_loss_average
+                avg_out[neglog_loss.output] += out[neglog_loss.output].mean()
+                avg_out[entropy_loss.output] +=  out[entropy_loss.output].mean()
 #endregion
             self.writer.add_scalar('Actor loss', avg/EPOCHS , self.gradient_steps)
+            self.writer.add_scalar('neglog loss', avg_out[neglog_loss.output]/EPOCHS , self.gradient_steps)
+            self.writer.add_scalar('entropy loss', avg_out[entropy_loss.output]/EPOCHS , self.gradient_steps)
             
 
 #region critic training
