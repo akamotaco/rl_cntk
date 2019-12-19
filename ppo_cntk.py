@@ -29,7 +29,7 @@ class ActorCritic(): # (nn.Module):
     def __init__(self, state_dim, action_dim, n_latent_var):
         # super(ActorCritic, self).__init__()
         # self.affine = nn.Linear(state_dim, n_latent_var)
-        self.affine = C.layers.Dense(n_latent_var)(C.placeholder(state_dim))
+        # self.affine = C.layers.Dense(n_latent_var)(C.placeholder(state_dim)) # not used?
         
         # actor
         # self.action_layer = nn.Sequential(
@@ -84,7 +84,8 @@ class ActorCritic(): # (nn.Module):
         memory.actions.append(action)
         memory.logprobs.append(dist.log_prob(action).eval())
 
-        return np.argmax(action)
+        # return np.argmax(action)
+        return int(action)
     
     def evaluate(self, action_shape): # , state, action):
 #         action_probs = self.action_layer(state)
@@ -104,16 +105,29 @@ class ActorCritic(): # (nn.Module):
 
         # state_value = self.value_layer.eval({self.value_layer.arguments[0]:state})
         # return action_logprobs, state_value, dist_entropy
-        action = C.input_variable(action_shape, name='action')
 
-        action_probs = self.action_layer
+        action = C.input_variable(action_shape, name='action') # old_action
+
+        action_probs = self.action_layer #(from old_state)
+        # print('input old_state')
         dist = Categorical(action_probs)
 
         action_logprobs =  dist.log_prob(action)
         dist_entropy =  dist.entropy()
 
         state_value = self.value_layer
+
         return action_logprobs, state_value, dist_entropy
+    
+    def copy_from(self, policy):
+        # from IPython import embed;embed(header='clone')
+        p1, p2 = self.action_layer.parameters, policy.action_layer.parameters
+        for i in range(len(p1)):
+            p1[i].value = p2[i].value
+
+        p1, p2 = self.value_layer.parameters, policy.value_layer.parameters
+        for i in range(len(p1)):
+            p1[i].value = p2[i].value
 
 class PPO:
     def __init__(self, state_dim, action_dim, n_latent_var, lr, betas, gamma, K_epochs, eps_clip):
@@ -129,6 +143,7 @@ class PPO:
         # self.policy_old = ActorCritic(state_dim, action_dim, n_latent_var).to(device)
         self.policy_old = ActorCritic(state_dim, action_dim, n_latent_var)
         # self.policy_old.load_state_dict(self.policy.state_dict())
+        self.policy_old.copy_from(self.policy)
         
         # self.MseLoss = nn.MSELoss()
     
@@ -151,18 +166,20 @@ class PPO:
         loss = -C.element_min(surr1, surr2) +  0.5*C.reduce_mean(C.square(c_state_values- c_rewards)) -0.01*c_dist_entropy
         self.loss = loss
 
-        trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, 1e-1, 0.99))
+        # trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule_per_sample(self.lr), C.learning_parameter_schedule_per_sample(0.9)))
+        trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule(self.lr), C.learning_parameter_schedule(0.9)))
+        # trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule(1e-1), C.learning_parameter_schedule(0.9)))
         self.trainer = trainer
         
         self.chunk = {
-            'action': self.policy.action_layer.arguments[0],
-            'value': self.policy.value_layer.arguments[0],
-            'ratios': c_ratios,
-            'state_values': c_state_values,
+            'action': self.policy.action_layer.arguments[0], # old_states
+            'value': self.policy.value_layer.arguments[0], # old_actions
+            # 'ratios': c_ratios,
+            # 'state_values': c_state_values,
             'rewards': c_rewards,
-            'dist_entropy': c_dist_entropy
+            # 'dist_entropy': c_dist_entropy
         }
-        from  IPython import embed;embed(header='loss')
+#        from  IPython import embed;embed(header='loss')
 
     def update(self, memory):   
         # Monte Carlo estimate of state rewards:
@@ -191,13 +208,13 @@ class PPO:
         # Optimize policy for K epochs:
         for _ in range(self.K_epochs):
             # Evaluating old actions and values :
-            logprobs, state_values, dist_entropy = self.policy.evaluate(1)
+            logprobs, state_values, dist_entropy = self.policy.evaluate(1) #old_states, old_actions)
 
             c_old_logprobs = C.input_variable(logprobs.shape, name='old_log_probs')
             
             # Finding the ratio (pi_theta / pi_theta__old):
     #         ratios = torch.exp(logprobs - old_logprobs.detach())
-            ratios = logprobs - c_old_logprobs
+            ratios = C.exp(logprobs - c_old_logprobs)
                 
             # Finding Surrogate Loss:
     #         advantages = rewards - state_values.detach()
@@ -209,11 +226,12 @@ class PPO:
             # surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
             # loss = -torch.min(surr1, surr2) + 0.5*self.MseLoss(state_values, rewards) - 0.01*dist_entropy
             if self.Trainer()[0] is None:
+                print("zxcv")
                 ll = self.Loss(ratios, state_values, dist_entropy)
 
     #         self.loss.eval(dict(zip(self.loss.arguments,[np.vstack(old_states),np.vstack(old_actions),n
     # ...: p.vstack(old_logprobs),np.vstack(rewards),np.vstack(old_states)])))
-            from IPython import embed;embed(header='train')
+#            from IPython import embed;embed(header='train')
             trainer, chunk = self.Trainer()
             # c_ratios = chunk['ratios']
             # c_state_values = state_values
@@ -227,8 +245,10 @@ class PPO:
             #     c_a: np.vstack(old_actions),
             #     c_old_logprobs: np.vstack(old_logprobs),
             #     c_rewards: rewards,
-            # })            
-            self.loss.eval(dict(zip(self.loss.arguments,[np.vstack(old_states),np.vstack(old_actions),np.vstack(old_logprobs),np.vstack(rewards),np.vstack(old_states)])))
+            # })
+            # from IPython import embed;embed(header='train')
+            # self.loss.eval(dict(zip(self.loss.arguments,[np.vstack(old_states),np.vstack(old_actions),np.vstack(old_logprobs),np.vstack(rewards),np.vstack(old_states)])))
+            # from IPython import embed;embed()
             trainer.train_minibatch(dict(zip(self.loss.arguments,[np.vstack(old_states),np.vstack(old_actions),np.vstack(old_logprobs),np.vstack(rewards),np.vstack(old_states)])))
     #         # take gradient step
     #         self.optimizer.zero_grad()
@@ -237,6 +257,7 @@ class PPO:
         
     #     # Copy new weights into old policy:
     #     self.policy_old.load_state_dict(self.policy.state_dict())
+        self.policy_old.copy_from(self.policy)
         
 def main():
     ############## Hyperparameters ##############
