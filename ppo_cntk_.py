@@ -11,11 +11,11 @@ import gym
 # from keras.optimizers import Adam
 
 # import numba as nb
-# from tensorboardX import SummaryWriter
-
-import cntk as C
+from tensorboardX import SummaryWriter
 
 import random
+import cntk as C
+
 
 C.try_set_default_device(C.gpu(0))
 
@@ -43,33 +43,33 @@ DUMMY_ACTION, DUMMY_VALUE = np.zeros((1, NUM_ACTIONS)), np.zeros((1, 1))
 
 
 # @nb.jit
-def exponential_average(old, new, b1):
-    return old * b1 + (1-b1) * new
+# def exponential_average(old, new, b1):
+#     return old * b1 + (1-b1) * new
 
 
-def proximal_policy_optimization_loss(advantage, old_prediction):
-    def loss(y_true, y_pred):
-        prob = K.sum(y_true * y_pred, axis=-1)
-        old_prob = K.sum(y_true * old_prediction, axis=-1)
-        r = prob/(old_prob + 1e-10)
-        return -K.mean(K.minimum(r * advantage, K.clip(r, min_value=1 - LOSS_CLIPPING, max_value=1 + LOSS_CLIPPING) * advantage) + ENTROPY_LOSS * -(prob * K.log(prob + 1e-10)))
-    return loss
+# def proximal_policy_optimization_loss(advantage, old_prediction):
+#     def loss(y_true, y_pred):
+#         prob = K.sum(y_true * y_pred, axis=-1)
+#         old_prob = K.sum(y_true * old_prediction, axis=-1)
+#         r = prob/(old_prob + 1e-10)
+#         return -K.mean(K.minimum(r * advantage, K.clip(r, min_value=1 - LOSS_CLIPPING, max_value=1 + LOSS_CLIPPING) * advantage) + ENTROPY_LOSS * -(prob * K.log(prob + 1e-10)))
+#     return loss
 
 
-def proximal_policy_optimization_loss_continuous(advantage, old_prediction):
-    def loss(y_true, y_pred):
-        var = K.square(NOISE)
-        pi = 3.1415926
-        denom = K.sqrt(2 * pi * var)
-        prob_num = K.exp(- K.square(y_true - y_pred) / (2 * var))
-        old_prob_num = K.exp(- K.square(y_true - old_prediction) / (2 * var))
+# def proximal_policy_optimization_loss_continuous(advantage, old_prediction):
+#     def loss(y_true, y_pred):
+#         var = K.square(NOISE)
+#         pi = 3.1415926
+#         denom = K.sqrt(2 * pi * var)
+#         prob_num = K.exp(- K.square(y_true - y_pred) / (2 * var))
+#         old_prob_num = K.exp(- K.square(y_true - old_prediction) / (2 * var))
 
-        prob = prob_num/denom
-        old_prob = old_prob_num/denom
-        r = prob/(old_prob + 1e-10)
+#         prob = prob_num/denom
+#         old_prob = old_prob_num/denom
+#         r = prob/(old_prob + 1e-10)
 
-        return -K.mean(K.minimum(r * advantage, K.clip(r, min_value=1 - LOSS_CLIPPING, max_value=1 + LOSS_CLIPPING) * advantage))
-    return loss
+#         return -K.mean(K.minimum(r * advantage, K.clip(r, min_value=1 - LOSS_CLIPPING, max_value=1 + LOSS_CLIPPING) * advantage))
+#     return loss
 
 
 class Agent:
@@ -88,11 +88,12 @@ class Agent:
         self.reward = []
         self.reward_over_time = []
         self.name = self.get_name()
-        # self.writer = SummaryWriter(self.name)
+        self.writer = SummaryWriter(self.name)
         self.gradient_steps = 0
 
     def get_name(self):
-        name = 'AllRuns/'
+        # name = 'AllRuns/'
+        name = 'log/'
         if CONTINUOUS is True:
             name += 'continous/'
         else:
@@ -229,11 +230,11 @@ class Agent:
 
     def transform_reward(self):
         if self.val is True:
-            # self.writer.add_scalar('Val episode reward', np.array(self.reward).sum(), self.episode)
-            print('Val episode reward', np.array(self.reward).sum(), self.episode)
+            self.writer.add_scalar('Val episode reward', np.array(self.reward).sum(), self.episode)
+            # print('Val episode reward', np.array(self.reward).sum(), self.episode)
         else:
-            # self.writer.add_scalar('Episode reward', np.array(self.reward).sum(), self.episode)
-            print('Episode reward', np.array(self.reward).sum(), self.episode)
+            self.writer.add_scalar('Episode reward', np.array(self.reward).sum(), self.episode)
+            # print('Episode reward', np.array(self.reward).sum(), self.episode)
         for j in range(len(self.reward) - 2, -1, -1):
             self.reward[j] += self.reward[j + 1] * GAMMA
 
@@ -303,11 +304,14 @@ class Agent:
             prob = C.reduce_sum(c_action * self.actor)
             old_prob = C.reduce_sum(c_action * c_prediction)
             ratio = prob/(old_prob + 1e-10)
-            loss = -C.reduce_mean(C.element_min(ratio*c_advantage, C.clip(ratio,1 - LOSS_CLIPPING,  1 + LOSS_CLIPPING)*c_advantage) + ENTROPY_LOSS * -(prob * C.log(prob + 1e-10)))
+            surr1 = c_advantage * ratio
+            surr2 = c_advantage * C.clip(ratio, 1-LOSS_CLIPPING,  1+LOSS_CLIPPING)
+            loss = -C.reduce_mean(C.element_min(surr1, surr2) + ENTROPY_LOSS * -(prob * C.log(prob + 1e-10)))
             actor_loss = loss
 
             trainer = C.Trainer(actor_loss, (actor_loss,None),  C.adam(actor_loss.parameters, C.learning_parameter_schedule_per_sample(LR), C.learning_parameter_schedule_per_sample(0.99)))
 
+            avg = 0
             for epoch in range(EPOCHS):
                 data_size = action.shape[0]
                 suffle_idx = random.sample(list(range(data_size)),data_size)
@@ -318,8 +322,11 @@ class Agent:
                 mb_advantage = advantage[suffle_idx]
 
                 trainer.train_minibatch(dict(zip(actor_loss.arguments,[mb_action, mb_obs, mb_old_prediction, mb_advantage])))
-                print(trainer.previous_minibatch_loss_average)
+                # print(trainer.previous_minibatch_loss_average)
+                avg += trainer.previous_minibatch_loss_average
 #endregion
+            self.writer.add_scalar('Actor loss', avg/EPOCHS , self.gradient_steps)
+            
 
 #region critic training
             c_reward = C.input_variable(1, name='reward')
@@ -327,8 +334,8 @@ class Agent:
             critic_loss = loss
 
             trainer = C.Trainer(critic_loss, (critic_loss,None),  C.adam(critic_loss.parameters, C.learning_parameter_schedule_per_sample(LR), C.learning_parameter_schedule_per_sample(0.99)))
-            # trainer = C.Trainer(critic_loss, (critic_loss,None),  C.adam(critic_loss.parameters, (0.002), (0.99)))
 
+            avg = 0
             for epoch in range(EPOCHS):
                 data_size = action.shape[0]
                 suffle_idx = random.sample(list(range(data_size)),data_size)
@@ -337,8 +344,10 @@ class Agent:
                 mb_reward = reward[suffle_idx]
 
                 trainer.train_minibatch(dict(zip(critic_loss.arguments,[mb_obs, mb_reward])))
-                print(trainer.previous_minibatch_loss_average)
+                # print(trainer.previous_minibatch_loss_average)
+                avg += trainer.previous_minibatch_loss_average
 #endregion
+            self.writer.add_scalar('Critic loss', avg/EPOCHS, self.gradient_steps)
 
             self.gradient_steps += 1
 
