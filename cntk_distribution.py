@@ -36,6 +36,10 @@ class Categorical():
         self.logits = C.log(self.prob)
         self.accum_prob = self.prob@C.Constant((1-np.tri(self.prob.shape[-1],k=-1)))
 
+#region method 2
+        self.category = np.array(range(self.c),np.float32)
+#endregion
+
     def sample(self,  n=1):
         samples = C.random.uniform((n,1))
         indcies = C.argmax(C.greater(self.accum_prob-samples,0),axis=1)
@@ -45,8 +49,14 @@ class Categorical():
         if type(d) is C.Function:
             from IPython import embed;embed(header='log_prob')
         else:
-            # return C.log(C.gather(self.prob, d))
-            return C.log(C.reduce_sum(self.prob * C.one_hot(d, self.c)))
+#region method 1
+            # return C.log(C.reduce_sum(self.prob * C.one_hot(d, self.c)))
+#endregion
+
+#region method 2
+            one_hot = C.equal(self.category,d)
+            return C.log(C.reduce_sum(self.prob * one_hot))
+#endregion
     
     def entropy(self):
         p_log_p = self.logits * self.prob

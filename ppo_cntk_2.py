@@ -8,6 +8,9 @@ import gym
 import cntk as C
 from cntk_distribution import Categorical
 
+from tensorboardX import SummaryWriter
+
+_writer = SummaryWriter('log/discrete/LunarLander-v2_pytorch_method2_low_lr')
 # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class Memory:
@@ -43,7 +46,7 @@ class ActorCritic(): # (nn.Module):
         self.action_layer = C.layers.Sequential([
             C.layers.Dense(n_latent_var, C.tanh),
             C.layers.Dense(n_latent_var, C.tanh),
-            C.layers.Dense(action_dim, C.softmax)
+            C.layers.Dense(action_dim, C.softmax, name='action_prob')
             ])(C.input_variable(state_dim, name='action_layer'))
         
         # critic
@@ -57,7 +60,7 @@ class ActorCritic(): # (nn.Module):
         self.value_layer = C.layers.Sequential([
             C.layers.Dense(n_latent_var, C.tanh),
             C.layers.Dense(n_latent_var, C.tanh),
-            C.layers.Dense(1)
+            C.layers.Dense(1, name='value')
             ])(C.input_variable(state_dim, name='value_layer'))
         
 #     def forward(self):
@@ -149,36 +152,47 @@ class PPO:
     
         self.trainer = None
         self.chunk = None
+
+        self.gradient_steps = 0
     
     def Trainer(self):
         return self.trainer, self.chunk
     
-    def Loss(self, c_ratios, c_state_values, c_dist_entropy):
-        # c_ratios = C.input_variable(1, name='ratios')
-        # c_state_values = C.input_variable(1, name='state_values')
-        # c_dist_entropy = C.input_variable(1, name='dist_entropy')
-        c_rewards = C.input_variable(1, name='rewards')
+    # def Loss(self, c_ratios, c_state_values, c_dist_entropy):
+    #     # c_ratios = C.input_variable(1, name='ratios')
+    #     # c_state_values = C.input_variable(1, name='state_values')
+    #     # c_dist_entropy = C.input_variable(1, name='dist_entropy')
+    #     c_rewards = C.input_variable(1, name='rewards')
 
-        advantages = c_rewards - c_state_values
-        surr1 = c_ratios * advantages
-        surr2 = C.clip(c_ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
-        # loss = -torch.min(surr1, surr2) + 0.5*self.MseLoss(state_values, rewards) - 0.01*dist_entropy
-        loss = -C.element_min(surr1, surr2) +  0.5*C.reduce_mean(C.square(c_state_values- c_rewards)) -0.01*c_dist_entropy
-        self.loss = loss
+    #     advantages = c_rewards - c_state_values
+    #     surr1 = c_ratios * advantages
+    #     surr2 = C.clip(c_ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
+    #     # loss = -torch.min(surr1, surr2) + 0.5*self.MseLoss(state_values, rewards) - 0.01*dist_entropy
+    #     # loss = -C.element_min(surr1, surr2) +  0.5*C.reduce_mean(C.square(c_state_values- c_rewards)) -0.01*c_dist_entropy
+    #     neglog_loss = -C.element_min(surr1, surr2)
+    #     entropy_loss = -0.01*c_dist_entropy
+    #     actor_loss = C.reduce_mean(neglog_loss + entropy_loss)
+    #     critic_loss = 0.5*C.reduce_mean(C.square(c_state_values- c_rewards))
+    #     self.loss = actor_loss + critic_loss
 
-        # trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule_per_sample(self.lr), C.learning_parameter_schedule_per_sample(0.9)))
-        trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule(self.lr), C.learning_parameter_schedule(0.9)))
-        # trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule(1e-1), C.learning_parameter_schedule(0.9)))
-        self.trainer = trainer
+    #     # trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule_per_sample(self.lr), C.learning_parameter_schedule_per_sample(0.9)))
+    #     trainer = C.Trainer(self.loss, (self.loss, None), C.adam(self.loss.parameters, C.learning_parameter_schedule_per_sample(self.lr), C.learning_parameter_schedule_per_sample(0.9)))
+    #     # trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule(1e-1), C.learning_parameter_schedule(0.9)))
+    #     self.trainer = trainer
         
-        self.chunk = {
-            'action': self.policy.action_layer.arguments[0], # old_states
-            'value': self.policy.value_layer.arguments[0], # old_actions
-            # 'ratios': c_ratios,
-            # 'state_values': c_state_values,
-            'rewards': c_rewards,
-            # 'dist_entropy': c_dist_entropy
-        }
+    #     self.chunk = {
+    #         'action': self.policy.action_layer.arguments[0], # old_states
+    #         'value': self.policy.value_layer.arguments[0], # old_actions
+    #         # 'ratios': c_ratios,
+    #         # 'state_values': c_state_values,
+    #         'rewards': c_rewards,
+    #         # 'dist_entropy': c_dist_entropy
+
+    #         'neglog_loss': neglog_loss,
+    #         'entropy_loss': entropy_loss,
+    #         'actor_loss': actor_loss,
+    #         'critic_loss': critic_loss
+    #     }
 #        from  IPython import embed;embed(header='loss')
 
     def update(self, memory):   
@@ -205,6 +219,8 @@ class PPO:
         old_actions = memory.actions
         old_logprobs = memory.logprobs
         
+        avg_out = {}
+
         # Optimize policy for K epochs:
         for _ in range(self.K_epochs):
             # Evaluating old actions and values :
@@ -214,8 +230,8 @@ class PPO:
             
             # Finding the ratio (pi_theta / pi_theta__old):
     #         ratios = torch.exp(logprobs - old_logprobs.detach())
-            ratios = C.exp(logprobs - c_old_logprobs)
-                
+            ratios = C.exp(logprobs - C.stop_gradient(c_old_logprobs))
+
             # Finding Surrogate Loss:
     #         advantages = rewards - state_values.detach()
     #         surr1 = ratios * advantages
@@ -225,21 +241,49 @@ class PPO:
             # surr1 = ratios * advantages
             # surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
             # loss = -torch.min(surr1, surr2) + 0.5*self.MseLoss(state_values, rewards) - 0.01*dist_entropy
-            if self.Trainer()[0] is None:
-                print("zxcv")
-                ll = self.Loss(ratios, state_values, dist_entropy)
+            # if self.Trainer()[0] is None:
+            #     print("zxcv")
+            #     ll = self.Loss(ratios, state_values, dist_entropy)
 
     #         self.loss.eval(dict(zip(self.loss.arguments,[np.vstack(old_states),np.vstack(old_actions),n
     # ...: p.vstack(old_logprobs),np.vstack(rewards),np.vstack(old_states)])))
 #            from IPython import embed;embed(header='train')
-            trainer, chunk = self.Trainer()
-            # c_ratios = chunk['ratios']
-            # c_state_values = state_values
-            c_rewards = chunk['rewards']
-            # c_dist_entropy = dist_entropy
-            c_a = chunk['action']
-            c_v = chunk['value']
+            c_rewards = C.input_variable(1, name='rewards')
 
+            # c_rewards_mean = (rewards - rewards.mean()) / (rewards.std() + 1e-5)
+            # c_rewards_mean = rewards.mean()
+            # c_rewards_std = C.sqrt(C.reduce_mean(C.square(c_rewards-c_rewards_mean)))
+            # c_rewards_norm = (c_rewards-c_rewards_mean)/(c_rewards_std+1e-5)
+
+            advantages = c_rewards - C.stop_gradient(state_values)
+            surr1 = ratios * advantages
+            surr2 = C.clip(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
+            # loss = -torch.min(surr1, surr2) + 0.5*self.MseLoss(state_values, rewards) - 0.01*dist_entropy
+            # loss = -C.element_min(surr1, surr2) +  0.5*C.reduce_mean(C.square(c_state_values- c_rewards)) -0.01*c_dist_entropy
+            neglog_loss = -C.element_min(surr1, surr2)
+            entropy_loss = -0.01*dist_entropy
+            actor_loss = C.reduce_mean(neglog_loss + entropy_loss)
+            # actor_loss = neglog_loss + entropy_loss
+            critic_loss = 0.5*C.reduce_mean(C.square(state_values - c_rewards))
+            loss = actor_loss + critic_loss
+
+            trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule_per_sample(self.lr), C.learning_parameter_schedule_per_sample(0.9)))
+            # trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule(self.lr), C.learning_parameter_schedule(0.9)))
+            # trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule(1e-1), C.learning_parameter_schedule(0.9)))
+#             trainer, chunk = self.Trainer()
+#             # c_ratios = chunk['ratios']
+#             # c_state_values = state_values
+#             c_rewards = chunk['rewards']
+#             # c_dist_entropy = dist_entropy
+#             c_a = chunk['action']
+#             c_v = chunk['value']
+
+# #
+#             neglog_loss = chunk['neglog_loss']
+#             entropy_loss = chunk['entropy_loss']
+#             actor_loss = chunk['actor_loss']
+#             critic_loss = chunk['critic_loss']
+#
             # trainer.train_minibatch({
             #     c_v: np.vstack(old_states),
             #     c_a: np.vstack(old_actions),
@@ -249,7 +293,24 @@ class PPO:
             # from IPython import embed;embed(header='train')
             # self.loss.eval(dict(zip(self.loss.arguments,[np.vstack(old_states),np.vstack(old_actions),np.vstack(old_logprobs),np.vstack(rewards),np.vstack(old_states)])))
             # from IPython import embed;embed()
-            trainer.train_minibatch(dict(zip(self.loss.arguments,[np.vstack(old_states),np.vstack(old_actions),np.vstack(old_logprobs),np.vstack(rewards),np.vstack(old_states)])))
+            # trainer.train_minibatch(dict(zip(self.loss.arguments,[np.vstack(old_states),np.vstack(old_actions),np.vstack(old_logprobs),np.vstack(rewards),np.vstack(old_states)])))
+            updated, outs = trainer.train_minibatch(dict(zip(loss.arguments,[np.vstack(old_states),np.vstack(old_actions),np.vstack(old_logprobs),np.vstack(rewards),np.vstack(old_states)])),
+                                    outputs=[actor_loss.output, critic_loss.output, neglog_loss.output, entropy_loss.output])
+
+            if neglog_loss.output not in avg_out.keys():
+                avg_out[neglog_loss.output] = 0
+            if entropy_loss.output not in avg_out.keys():
+                avg_out[entropy_loss.output] = 0
+            if actor_loss.output not in avg_out.keys():
+                avg_out[actor_loss.output] = 0
+            if critic_loss.output not in avg_out.keys():
+                avg_out[critic_loss.output] = 0
+            
+            avg_out[neglog_loss.output] += outs[neglog_loss.output].mean()
+            avg_out[entropy_loss.output] += outs[entropy_loss.output].mean()
+            avg_out[actor_loss.output] += outs[actor_loss.output].mean()
+            avg_out[critic_loss.output] += outs[critic_loss.output].mean()
+
     #         # take gradient step
     #         self.optimizer.zero_grad()
     #         loss.mean().backward()
@@ -258,6 +319,12 @@ class PPO:
     #     # Copy new weights into old policy:
     #     self.policy_old.load_state_dict(self.policy.state_dict())
         self.policy_old.copy_from(self.policy)
+
+        _writer.add_scalar('Actor loss', avg_out[actor_loss.output]/self.K_epochs , self.gradient_steps)
+        _writer.add_scalar('neglog loss', avg_out[neglog_loss.output]/self.K_epochs , self.gradient_steps)
+        _writer.add_scalar('entropy loss', avg_out[entropy_loss.output]/self.K_epochs , self.gradient_steps)
+        _writer.add_scalar('Critic loss', avg_out[critic_loss.output]/self.K_epochs, self.gradient_steps)
+        self.gradient_steps += 1
         
 def main():
     ############## Hyperparameters ##############
@@ -273,7 +340,7 @@ def main():
     max_timesteps = 300         # max timesteps in one episode
     n_latent_var = 64           # number of variables in hidden layer
     update_timestep = 2000      # update policy every n timesteps
-    lr = 0.002
+    lr = 1e-4 #0.002
     betas = (0.9, 0.999)
     gamma = 0.99                # discount factor
     K_epochs = 4                # update policy for K epochs
@@ -323,6 +390,8 @@ def main():
                 break
                 
         avg_length += t
+
+        _writer.add_scalar('Episode reward', running_reward, i_episode)
         
         # stop training if avg_reward > solved_reward
         if running_reward > (log_interval*solved_reward):
