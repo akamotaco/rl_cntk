@@ -25,13 +25,16 @@ class MultivariateNormalDiag():
         return self.mvn_log_prob(x)
 
 class Categorical():
-    def __init__(self, p):
-        if type(p) is C.Function:
+    def __init__(self, p, eps=1e-7):
+        if isinstance(p, (C.Variable, C.Function)):
             self.p = C.squeeze(p)
         else:
             self.p = C.Constant(np.squeeze(p))
+
+        self.eps = C.Constant(eps, name='eps')
         self.c = self.p.shape[0]
-        self.prob = self.p/C.reduce_sum(self.p)
+
+        self.prob = self.p/(self.eps+C.reduce_sum(self.p))
         self.logits = C.log(self.prob)
         self.accum_prob = self.prob@C.Constant((1-np.tri(self.prob.shape[-1],k=-1)))
 
@@ -43,12 +46,9 @@ class Categorical():
         self._log_prob = C.log(C.reduce_sum(self.prob * C.one_hot(dist, self.c)))
 
         # method 2
+        # self.category = np.array(range(self.c),np.float32)
         # one_hot = C.equal(self.category, dist)
         # self._log_prob = C.log(C.reduce_sum(self.prob * one_hot))
-
-#region method 2
-        self.category = np.array(range(self.c),np.float32)
-#endregion
 
     def sample(self,  n=1):
         samples = C.random.uniform((n,1))
