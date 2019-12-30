@@ -4,7 +4,6 @@ from scipy.stats import multinomial
 
 import cntk_expansion
 
-
 class MultivariateNormalDiag():
     def __init__(self, loc, scale_diag):
         self.loc = np.array(loc)
@@ -36,6 +35,17 @@ class Categorical():
         self.logits = C.log(self.prob)
         self.accum_prob = self.prob@C.Constant((1-np.tri(self.prob.shape[-1],k=-1)))
 
+        p_log_p = self.logits * self.prob
+        self._entropy = -C.reduce_sum(p_log_p)
+
+        dist = C.input_variable(1, name='category index')
+        # method 1
+        self._log_prob = C.log(C.reduce_sum(self.prob * C.one_hot(dist, self.c)))
+
+        # method 2
+        # one_hot = C.equal(self.category, dist)
+        # self._log_prob = C.log(C.reduce_sum(self.prob * one_hot))
+
 #region method 2
         self.category = np.array(range(self.c),np.float32)
 #endregion
@@ -45,19 +55,8 @@ class Categorical():
         indcies = C.argmax(C.greater(self.accum_prob-samples,0),axis=1)
         return C.squeeze(indcies)
 
-    def log_prob(self, d):
-        if type(d) is C.Function:
-            from IPython import embed;embed(header='log_prob')
-        else:
-#region method 1
-            # return C.log(C.reduce_sum(self.prob * C.one_hot(d, self.c)))
-#endregion
-
-#region method 2
-            one_hot = C.equal(self.category,d)
-            return C.log(C.reduce_sum(self.prob * one_hot))
-#endregion
+    def log_prob(self):
+        return self._log_prob
     
     def entropy(self):
-        p_log_p = self.logits * self.prob
-        return -C.reduce_sum(p_log_p)
+        return self._entropy

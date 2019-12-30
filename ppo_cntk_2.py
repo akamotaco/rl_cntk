@@ -4,10 +4,11 @@ import numpy as np
 import gym
 import cntk as C
 from cntk_distribution import Categorical
+from time import gmtime, strftime
 
 from tensorboardX import SummaryWriter
 
-_writer = SummaryWriter('log/discrete/LunarLander-v2_pytorch_method2_low_lr1')
+_writer = SummaryWriter('log/discrete/LunarLander-v2_pytorch_method2'+strftime("%Y%m%d%H%M%S", gmtime()))
 
 class Memory:
     def __init__(self):
@@ -24,9 +25,11 @@ class Memory:
         del self.rewards[:]
         del self.is_terminals[:]
 
-class ActorCritic(): # (nn.Module):
+class ActorCritic():
     def __init__(self, state_dim, action_dim, n_latent_var):
-        state_input = C.input_variable(state_dim, name='state_input')
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        state_input = C.input_variable(self.state_dim, name='state_input')
 
         # actor
         self.action_layer = C.layers.Sequential([
@@ -41,27 +44,31 @@ class ActorCritic(): # (nn.Module):
             C.layers.Dense(n_latent_var, C.tanh),
             C.layers.Dense(1, name='value')
             ])(state_input)
+
+        self.action_dist = Categorical(self.action_layer)
         
     def act(self, state, memory):
-        action_probs = self.action_layer.eval({self.action_layer.arguments[0]:state})
-        dist = Categorical(action_probs)
-        action = dist.sample().eval()
+        # action_probs = self.action_layer.eval({self.action_layer.arguments[0]:state}) # 최적화 필요
+        # dist = Categorical(action_probs)
+
+        action = self.action_dist.sample().eval({self.action_layer.arguments[0]:state})
+        log_prob = self.action_dist.log_prob()
 
         memory.states.append(state)
         memory.actions.append(action)
-        memory.logprobs.append(dist.log_prob(action).eval())
+        memory.logprobs.append(log_prob.eval(dict(zip(log_prob.arguments, [state, action]))))
 
         return int(action)
     
-    def evaluate(self, action_shape): # , state, action):
-        action = C.input_variable(action_shape, name='action') # old_action
+    def evaluate(self):
+        # old_action = C.input_variable(1, name='old_action')
 
-        action_probs = self.action_layer #(from old_state)
-        # print('input old_state')
-        dist = Categorical(action_probs)
+        # action_probs = self.action_layer # from old_state # 최적화 필요
+        # dist = Categorical(action_probs)
+        action_dist = self.action_dist
 
-        action_logprobs =  dist.log_prob(action)
-        dist_entropy =  dist.entropy()
+        action_logprobs =  action_dist.log_prob()
+        dist_entropy =  action_dist.entropy()
 
         state_value = self.value_layer
 
@@ -98,9 +105,40 @@ class PPO:
         self.loss = None
 
         self.gradient_steps = 0
+
+        self.loss, self.chunk, self.trainer = self.Loss()
+    
+    def Loss(self):
+        # Evaluating old actions and values :
+        logprobs, state_value, dist_entropy = self.policy.evaluate()
+
+        # Finding the ratio (pi_theta / pi_theta__old): # (importance sampling)
+        c_old_logprobs = C.input_variable(logprobs.shape, name='old_log_probs')
+        ratios = C.exp(logprobs - C.stop_gradient(c_old_logprobs))
+
+        c_rewards = C.input_variable(1, name='rewards')
+        advantages = c_rewards - C.stop_gradient(state_value)
+
+        # Finding Surrogate Loss:
+        surr1 = ratios * advantages
+        surr2 = C.clip(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
+        neglog_loss = -C.element_min(surr1, surr2)
+        entropy_loss = -0.01*dist_entropy
+        actor_loss = C.reduce_mean(neglog_loss + entropy_loss)
+        critic_loss = 0.5*C.reduce_mean(C.square(state_value - c_rewards))
+        loss = actor_loss + critic_loss
+
+        chunk = {'neglog_loss':neglog_loss,
+                 'entropy_loss':entropy_loss,
+                 'actor_loss':actor_loss,
+                 'critic_loss':critic_loss}
+
+        trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule_per_sample(self.lr), C.learning_parameter_schedule_per_sample(0.9)))
+
+        return loss, chunk, trainer
     
     def Trainer(self):
-        return self.trainer, self.chunk
+        return self.loss, self.trainer, self.chunk
     
     def update(self, memory):   
         # Monte Carlo estimate of state rewards:
@@ -125,40 +163,14 @@ class PPO:
 
         # Optimize policy for K epochs:
         for _ in range(self.K_epochs):
-            if self.loss is None:
-                # Evaluating old actions and values :
-                self.logprobs, self.state_values, self.dist_entropy = self.policy.evaluate(1) #old_states, old_actions)
+            loss, trainer, chunk = self.Trainer()
+            
+            actor_loss = chunk['actor_loss']
+            critic_loss = chunk['critic_loss']
+            neglog_loss = chunk['neglog_loss']
+            entropy_loss = chunk['entropy_loss']
 
-                self.c_old_logprobs = C.input_variable(self.logprobs.shape, name='old_log_probs')
-                
-                # Finding the ratio (pi_theta / pi_theta__old): # (importance sampling)
-                ratios = C.exp(self.logprobs - C.stop_gradient(self.c_old_logprobs))
-
-                self.c_rewards = C.input_variable(1, name='rewards')
-
-                advantages = self.c_rewards - C.stop_gradient(self.state_values)
-                # Finding Surrogate Loss:
-                surr1 = ratios * advantages
-                surr2 = C.clip(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
-                neglog_loss = -C.element_min(surr1, surr2)
-                entropy_loss = -0.01*self.dist_entropy
-                actor_loss = C.reduce_mean(neglog_loss + entropy_loss)
-                critic_loss = 0.5*C.reduce_mean(C.square(self.state_values - self.c_rewards))
-                self.loss = actor_loss + critic_loss
-
-                self.chunk = {'neglog_loss':neglog_loss,
-                              'entropy_loss':entropy_loss,
-                              'actor_loss':actor_loss,
-                              'critic_loss':critic_loss}
-
-                self.trainer = C.Trainer(self.loss, (self.loss, None), C.adam(self.loss.parameters, C.learning_parameter_schedule_per_sample(self.lr), C.learning_parameter_schedule_per_sample(0.9)))
-
-            actor_loss = self.chunk['actor_loss']
-            critic_loss = self.chunk['critic_loss']
-            neglog_loss = self.chunk['neglog_loss']
-            entropy_loss = self.chunk['entropy_loss']
-
-            updated, outs = self.trainer.train_minibatch(dict(zip(self.loss.arguments,
+            updated, outs = trainer.train_minibatch(dict(zip(loss.arguments,
                                         [np.vstack(old_states).astype(np.float32),
                                         np.vstack(old_actions).astype(np.float32),
                                         np.vstack(old_logprobs).astype(np.float32),
@@ -196,7 +208,7 @@ def main():
     env = gym.make(env_name)
     state_dim = env.observation_space.shape[0]
     action_dim = 4
-    render = True # False # 
+    render = False # True # 
     solved_reward = 230         # stop training if avg_reward > solved_reward
     log_interval = 20           # print avg reward in the interval
     max_episodes = 50000        # max training episodes
@@ -214,7 +226,6 @@ def main():
     C.try_set_default_device(C.gpu(0))
     
     if random_seed:
-        # torch.manual_seed(random_seed)
         env.seed(random_seed)
     
     memory = Memory()
@@ -259,7 +270,6 @@ def main():
         # stop training if avg_reward > solved_reward
         if running_reward > (log_interval*solved_reward):
             print("########## Solved! ##########")
-            # torch.save(ppo.policy.state_dict(), './PPO_{}.pth'.format(env_name))
             # ppo.policy.action_layer.save('action_layer.model')
             # ppo.policy.value_layer.save('value_layer.model')
             break
