@@ -46,8 +46,7 @@ class Categorical():
         self._log_prob = C.log(C.reduce_sum(self.prob * C.one_hot(dist, self.c)))
 
         # method 2
-        # self.category = np.array(range(self.c),np.float32)
-        # one_hot = C.equal(self.category, dist)
+        # one_hot = C.equal(C.Constant(range(self.c)), dist)
         # self._log_prob = C.log(C.reduce_sum(self.prob * one_hot))
 
     def sample(self,  n=1):

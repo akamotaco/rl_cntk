@@ -48,9 +48,6 @@ class ActorCritic():
         self.action_dist = Categorical(self.action_layer)
         
     def act(self, state, memory):
-        # action_probs = self.action_layer.eval({self.action_layer.arguments[0]:state}) # 최적화 필요
-        # dist = Categorical(action_probs)
-
         action = self.action_dist.sample().eval({self.action_layer.arguments[0]:state})
         log_prob = self.action_dist.log_prob()
 
@@ -61,14 +58,8 @@ class ActorCritic():
         return int(action)
     
     def evaluate(self):
-        # old_action = C.input_variable(1, name='old_action')
-
-        # action_probs = self.action_layer # from old_state # 최적화 필요
-        # dist = Categorical(action_probs)
-        action_dist = self.action_dist
-
-        action_logprobs =  action_dist.log_prob()
-        dist_entropy =  action_dist.entropy()
+        action_logprobs = self.action_dist.log_prob()
+        dist_entropy =  self.action_dist.entropy()
 
         state_value = self.value_layer
 
@@ -133,7 +124,8 @@ class PPO:
                  'actor_loss':actor_loss,
                  'critic_loss':critic_loss}
 
-        trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule_per_sample(self.lr), C.learning_parameter_schedule_per_sample(0.9)))
+        trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule_per_sample(self.lr), C.momentum_schedule_per_sample(self.betas[0]), variance_momentum=C.momentum_schedule_per_sample(self.betas[1])))
+        # trainer = C.Trainer(loss, (loss, None), C.adam(loss.parameters, C.learning_parameter_schedule(10), C.momentum_schedule(0.9), variance_momentum=C.momentum_schedule(0.999))) # higher learning rate
 
         return loss, chunk, trainer
     
